@@ -15,3 +15,8 @@ repositories {
     }
     mavenCentral()
 }
+
+dependencies {
+    implementation("org.yaml:snakeyaml:2.0") // Latest version as of now
+}
+
