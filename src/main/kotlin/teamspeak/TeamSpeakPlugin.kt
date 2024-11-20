@@ -1,26 +1,23 @@
 package org.evaz.mirai.plugin.teamspeak
 
 import kotlinx.coroutines.*
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
+import net.mamoe.mirai.utils.MiraiLogger
+import java.io.*
 import java.net.Socket
-
-interface TeamSpeakEventListener {
-    suspend fun onUserJoin(clid: Int, nickname: String)
-    suspend fun onUserLeave(clid: Int, nickname: String)
-}
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 
 class TeamSpeakPlugin {
 
-    private val userCache = mutableMapOf<Int, String>()
+    private val userCache = ConcurrentHashMap<Int, String>()
 
+    @Volatile
     private var socket: Socket? = null
+
+    @Volatile
     private var isListening = true
 
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-    private val listeners = mutableListOf<TeamSpeakEventListener>()
+    private val listeners = CopyOnWriteArrayList<TeamSpeakEventListener>()
 
     // 注册监听器
     fun addEventListener(listener: TeamSpeakEventListener) {
@@ -36,46 +33,53 @@ class TeamSpeakPlugin {
         queryPort: Int,
         username: String,
         password: String,
-        virtualServerId: Int
+        virtualServerId: Int,
+        logger: MiraiLogger
     ) {
-        scope.launch {
+        CoroutineScope(Dispatchers.IO).launch {
             try {
                 socket = Socket(host, queryPort).apply {
                     soTimeout = 0
                 }
-                socket?.use { sock ->
-                    OutputStreamWriter(sock.getOutputStream()).use { writer ->
-                        BufferedReader(InputStreamReader(sock.getInputStream())).use { reader ->
+                socket?.let { sock ->
+                    val writer = BufferedWriter(OutputStreamWriter(sock.getOutputStream(), Charsets.UTF_8))
+                    val reader = BufferedReader(InputStreamReader(sock.getInputStream(), Charsets.UTF_8))
 
-                            logInfo("Server: ${reader.readLine()}")
+                    logger.info("服务器响应: ${reader.readLine()}")
 
-                            sendCommand(writer, "login $username $password")
-                            logInfo("Login Response: ${readResponse(reader)}")
+                    sendCommand(writer, "login $username $password")
+                    logger.info("登录响应: ${readResponse(reader)}")
 
-                            sendCommand(writer, "use sid=$virtualServerId")
-                            logInfo("Select Server Response: ${readResponse(reader)}")
+                    sendCommand(writer, "use sid=$virtualServerId")
+                    logger.info("选择服务器响应: ${readResponse(reader)}")
 
-                            sendCommand(writer, "servernotifyregister event=server")
-                            logInfo("Register Event Response: ${readResponse(reader)}")
+                    sendCommand(writer, "servernotifyregister event=server")
+                    logger.info("注册事件通知响应: ${readResponse(reader)}")
 
-                            logInfo("Listening for events...")
+                    logger.info("开始监听服务器事件...")
 
-                            while (isListening && sock.isConnected && !sock.isClosed) {
-                                val line = reader.readLine()
-                                if (line != null) {
-                                    handleServerEvent(line)
-                                }
-                            }
+                    // 启动心跳协程
+                    val heartbeatJob = launchHeartbeat(writer, logger)
 
-                            sendCommand(writer, "logout")
-                            logInfo("Logged out.")
+                    // 监听服务器事件
+                    while (isListening && !sock.isClosed) {
+                        val line = reader.readLine()
+                        if (line != null) {
+                            handleServerEvent(line, logger)
+                        } else {
+                            delay(100) // 避免过度占用CPU
                         }
                     }
+
+                    heartbeatJob.cancel()
+                    sendCommand(writer, "logout")
+                    logger.info("已注销登录")
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                logger.error("发生异常: ${e.message}", e)
             } finally {
                 stopListening()
+                logger.info("已停止监听并关闭连接")
             }
         }
     }
@@ -84,28 +88,24 @@ class TeamSpeakPlugin {
         isListening = false
         try {
             socket?.close()
-            scope.cancel()
-            logInfo("Stopped listening and closed socket.")
         } catch (e: Exception) {
-            e.printStackTrace()
-            logError("Error occurred while stopping the listener.")
+            // 忽略关闭异常
         }
     }
 
-    private fun sendCommand(writer: OutputStreamWriter, command: String) {
+    private fun sendCommand(writer: BufferedWriter, command: String) {
         writer.write("$command\n")
         writer.flush()
     }
 
-    private suspend fun handleServerEvent(line: String) {
+    private suspend fun handleServerEvent(line: String, logger: MiraiLogger) {
         when {
             line.contains("notifycliententerview") -> {
                 val clid = Regex("clid=(\\d+)").find(line)?.groupValues?.get(1)?.toIntOrNull()
                 val nickname = Regex("client_nickname=([^ ]+)").find(line)?.groupValues?.get(1)?.decodeTS3String()
                 if (clid != null && nickname != null) {
                     userCache[clid] = nickname
-                    logInfo("User joined: $nickname (clid: $clid)")
-                    // 通知所有监听器
+                    logger.info("用户加入: $nickname (clid: $clid)")
                     listeners.forEach { listener ->
                         listener.onUserJoin(clid, nickname)
                     }
@@ -115,13 +115,15 @@ class TeamSpeakPlugin {
                 val clid = Regex("clid=(\\d+)").find(line)?.groupValues?.get(1)?.toIntOrNull()
                 if (clid != null) {
                     val nickname = userCache[clid] ?: "Unknown"
-                    logInfo("User left: $nickname (clid: $clid)")
-                    // 通知所有监听器
+                    logger.info("用户离开: $nickname (clid: $clid)")
                     listeners.forEach { listener ->
                         listener.onUserLeave(clid, nickname)
                     }
-                    userCache.remove(clid) // 从缓存中移除
+                    userCache.remove(clid)
                 }
+            }
+            else -> {
+                // 处理其他类型的消息或事件
             }
         }
     }
@@ -138,18 +140,24 @@ class TeamSpeakPlugin {
         return response.toString()
     }
 
-    private fun logInfo(message: String) {
-        println("[INFO] $message")
-    }
-
-    private fun logError(message: String) {
-        System.err.println("[ERROR] $message")
-    }
-
     private fun String.decodeTS3String(): String {
         return this.replace("\\s", " ")
             .replace("\\p", "|")
             .replace("\\/", "/")
             .replace("\\\\", "\\")
+    }
+
+    private fun launchHeartbeat(writer: BufferedWriter, logger: MiraiLogger): Job {
+        return CoroutineScope(Dispatchers.IO).launch {
+            while (isListening) {
+                try {
+                    sendCommand(writer, "version")
+                    delay(60000) // 每60秒发送一次心跳
+                } catch (e: Exception) {
+                    logger.error("心跳发送失败: ${e.message}", e)
+                    break
+                }
+            }
+        }
     }
 }
