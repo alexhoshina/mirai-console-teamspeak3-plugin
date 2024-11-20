@@ -71,10 +71,11 @@ class MiraiGroupNotifier(
     }
 
     companion object {
-        private val defaultTemplates = mapOf(
-            "join" to "用户 {nickname} (UID: {uid}) 加入了服务器",
-            "leave" to "用户 {nickname} (UID: {uid}) 离开了服务器"
-        )
+       private val defaultTemplates = PluginConfig.defaultTemplates
+//           mapOf(
+//            "join" to "用户 {nickname} (UID: {uid}) 加入了服务器",
+//            "leave" to "用户 {nickname} (UID: {uid}) 离开了服务器"
+//        )
     }
 
 }

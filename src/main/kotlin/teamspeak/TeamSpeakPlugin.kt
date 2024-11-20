@@ -10,10 +10,9 @@ import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
-
-
 class TeamSpeakPlugin {
-    private val userCache = mutableMapOf<Int, Pair<String, String>>()
+
+    private val userCache = ConcurrentHashMap<Int, Pair<String, String>>()  // clid -> (nickname, uid)
 
     @Volatile
     private var socket: Socket? = null
@@ -40,7 +39,8 @@ class TeamSpeakPlugin {
         virtualServerId: Int,
         logger: MiraiLogger
     ) {
-        CoroutineScope(Dispatchers.IO).launch {
+        val scope = CoroutineScope(Dispatchers.IO)
+        scope.launch {
             try {
                 socket = Socket(host, queryPort).apply {
                     soTimeout = 0
@@ -70,17 +70,21 @@ class TeamSpeakPlugin {
                     // 启动心跳协程
                     val heartbeatJob = launchHeartbeat(writer, logger)
 
+                    // 启动刷新频道列表的协程
+                    val refreshJob = launchChannelCacheRefresh(writer, reader, logger)
+
                     // 监听服务器事件
                     while (isListening && !sock.isClosed) {
                         val line = reader.readLine()
                         if (line != null) {
                             handleServerEvent(line, writer, reader, logger)
                         } else {
-                            delay(100) // 避免过度占用CPU
+                            delay(PluginConfig.listenLoopDelay) // 避免过度占用CPU
                         }
                     }
 
                     heartbeatJob.cancel()
+                    refreshJob.cancel()
                     sendCommand(writer, "logout")
                     logger.info("已注销登录")
                 }
@@ -113,15 +117,18 @@ class TeamSpeakPlugin {
         reader: BufferedReader,
         logger: MiraiLogger
     ) {
+        val data = parseServerMessage(line)
+
         when {
-            line.contains("notifycliententerview") -> {
-                val clid = Regex("clid=(\\d+)").find(line)?.groupValues?.get(1)?.toIntOrNull()
-                val nickname = Regex("client_nickname=([^ ]+)").find(line)?.groupValues?.get(1)?.decodeTS3String()
-                val uid = Regex("client_unique_identifier=([^ ]+)").find(line)?.groupValues?.get(1)
-                val channelId = Regex("ctid=(\\d+)").find(line)?.groupValues?.get(1)?.toIntOrNull()
+            line.startsWith("notifycliententerview") -> {
+                val clid = data["clid"]?.toIntOrNull()
+                val nickname = data["client_nickname"]
+                val uid = data["client_unique_identifier"]
+                val channelId = data["ctid"]?.toIntOrNull()
                 val channelName = ChannelCacheData.channels[channelId]?.name ?: "Unknown"
 
                 if (clid != null && nickname != null && uid != null) {
+                    // 检查 UID 是否在排除列表中
                     if (uid in PluginConfig.excludedUIDs) {
                         logger.info("用户 $nickname (UID: $uid) 在排除列表中，忽略事件")
                     } else {
@@ -136,10 +143,10 @@ class TeamSpeakPlugin {
                     }
                 }
             }
-            line.contains("notifyclientleftview") -> {
-                val clid = Regex("clid=(\\d+)").find(line)?.groupValues?.get(1)?.toIntOrNull()
-                val (nickname, uid) = userCache[clid] ?: ("Unknown" to "Unknown")
-                if (clid != null && nickname != "Unknown" && uid != "Unknown") {
+            line.startsWith("notifyclientleftview") -> {
+                val clid = data["clid"]?.toIntOrNull()
+                if (clid != null) {
+                    val (nickname, uid) = userCache[clid] ?: ("Unknown" to "Unknown")
                     if (uid in PluginConfig.excludedUIDs) {
                         logger.info("用户 $nickname (UID: $uid) 在排除列表中，忽略事件")
                     } else {
@@ -148,10 +155,8 @@ class TeamSpeakPlugin {
                         listeners.forEach { listener ->
                             listener.onUserLeave(uid, nickname, additionalData)
                         }
-                        userCache.remove(clid)
                     }
-                } else if(uid == "Unknown") {
-                    logger.info("用户离开: 未知用户 (clid: $clid)")
+                    userCache.remove(clid)
                 }
             }
             else -> {
@@ -173,10 +178,17 @@ class TeamSpeakPlugin {
     }
 
     private fun String.decodeTS3String(): String {
-        return this.replace("\\s", " ")
+        return this.replace("\\\\", "\\")
+            .replace("\\s", " ")
             .replace("\\p", "|")
             .replace("\\/", "/")
-            .replace("\\\\", "\\")
+            .replace("\\a", "\u0007")
+            .replace("\\b", "\b")
+            .replace("\\f", "\u000C")
+            .replace("\\n", "\n")
+            .replace("\\r", "\r")
+            .replace("\\t", "\t")
+            .replace("\\v", "\u000B")
     }
 
     private fun launchHeartbeat(writer: BufferedWriter, logger: MiraiLogger): Job {
@@ -184,7 +196,7 @@ class TeamSpeakPlugin {
             while (isListening) {
                 try {
                     sendCommand(writer, "version")
-                    delay(60000) // 每60秒发送一次心跳
+                    delay(PluginConfig.heartbeatInterval) // 每60秒发送一次心跳
                 } catch (e: Exception) {
                     logger.error("心跳发送失败: ${e.message}", e)
                     break
@@ -193,15 +205,61 @@ class TeamSpeakPlugin {
         }
     }
 
-    private fun parseAndCacheChannels(response: String) {
-        val channelRegex = Regex("cid=(\\d+) channel_name=([^ ]+)")
-        val matches = channelRegex.findAll(response)
-        matches.forEach { matchResult ->
-            val cid = matchResult.groupValues[1].toInt()
-            val channelName = matchResult.groupValues[2].decodeTS3String()
-            val channel = Channel(id = cid, name = channelName)
-            ChannelCacheData.channels[cid] = channel
+    private fun launchChannelCacheRefresh(
+        writer: BufferedWriter,
+        reader: BufferedReader,
+        logger: MiraiLogger
+    ): Job {
+        val refreshInterval = PluginConfig.channelCacheRefreshInterval // 将秒转换为毫秒
+        return CoroutineScope(Dispatchers.IO).launch {
+            while (isListening) {
+                try {
+                    delay(refreshInterval)
+                    if (!isListening) break
+                    logger.info("正在刷新频道列表缓存...")
+                    sendCommand(writer, "channellist")
+                    val channelListResponse = readResponse(reader)
+                    parseAndCacheChannels(channelListResponse)
+                    logger.info("频道列表缓存已更新")
+                } catch (e: Exception) {
+                    logger.error("刷新频道列表缓存时发生异常: ${e.message}", e)
+                }
+            }
         }
-//        ChannelCacheData.save()
+    }
+
+    private fun parseServerMessage(message: String): Map<String, String> {
+        val result = mutableMapOf<String, String>()
+        val params = message.split(' ') // 以空格分隔参数
+        for (param in params) {
+            val separatorIndex = param.indexOf('=')
+            if (separatorIndex != -1) {
+                val key = param.substring(0, separatorIndex)
+                val value = param.substring(separatorIndex + 1).decodeTS3String()
+                result[key] = value
+            }
+        }
+        return result
+    }
+
+    private fun parseAndCacheChannels(response: String) {
+        val newChannels = mutableMapOf<Int, Channel>()
+
+        val channels = response.split('|') // 频道信息之间以 '|' 分隔
+        for (channelInfo in channels) {
+            val data = parseServerMessage(channelInfo)
+            val cid = data["cid"]?.toIntOrNull()
+            val channelName = data["channel_name"]
+            if (cid != null && channelName != null) {
+                val channel = Channel(id = cid, name = channelName)
+                newChannels[cid] = channel
+            }
+        }
+
+        synchronized(ChannelCacheData) {
+            ChannelCacheData.channels.clear()
+            ChannelCacheData.channels.putAll(newChannels)
+            
+        }
     }
 }
