@@ -2,14 +2,18 @@ package org.evaz.mirai.plugin.teamspeak
 
 import kotlinx.coroutines.*
 import net.mamoe.mirai.utils.MiraiLogger
+import org.evaz.mirai.plugin.config.PluginConfig
+import org.evaz.mirai.plugin.data.ChannelCacheData
+import org.evaz.mirai.plugin.data.Channel
 import java.io.*
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
-class TeamSpeakPlugin {
 
-    private val userCache = ConcurrentHashMap<Int, String>()
+
+class TeamSpeakPlugin {
+    private val userCache = mutableMapOf<Int, Pair<String, String>>()
 
     @Volatile
     private var socket: Socket? = null
@@ -56,6 +60,11 @@ class TeamSpeakPlugin {
                     sendCommand(writer, "servernotifyregister event=server")
                     logger.info("注册事件通知响应: ${readResponse(reader)}")
 
+                    // 获取频道列表并缓存
+                    sendCommand(writer, "channellist")
+                    val channelListResponse = readResponse(reader)
+                    parseAndCacheChannels(channelListResponse)
+
                     logger.info("开始监听服务器事件...")
 
                     // 启动心跳协程
@@ -65,7 +74,7 @@ class TeamSpeakPlugin {
                     while (isListening && !sock.isClosed) {
                         val line = reader.readLine()
                         if (line != null) {
-                            handleServerEvent(line, logger)
+                            handleServerEvent(line, writer, reader, logger)
                         } else {
                             delay(100) // 避免过度占用CPU
                         }
@@ -98,28 +107,49 @@ class TeamSpeakPlugin {
         writer.flush()
     }
 
-    private suspend fun handleServerEvent(line: String, logger: MiraiLogger) {
+    private suspend fun handleServerEvent(
+        line: String,
+        writer: BufferedWriter,
+        reader: BufferedReader,
+        logger: MiraiLogger
+    ) {
         when {
             line.contains("notifycliententerview") -> {
                 val clid = Regex("clid=(\\d+)").find(line)?.groupValues?.get(1)?.toIntOrNull()
                 val nickname = Regex("client_nickname=([^ ]+)").find(line)?.groupValues?.get(1)?.decodeTS3String()
-                if (clid != null && nickname != null) {
-                    userCache[clid] = nickname
-                    logger.info("用户加入: $nickname (clid: $clid)")
-                    listeners.forEach { listener ->
-                        listener.onUserJoin(clid, nickname)
+                val uid = Regex("client_unique_identifier=([^ ]+)").find(line)?.groupValues?.get(1)
+                val channelId = Regex("ctid=(\\d+)").find(line)?.groupValues?.get(1)?.toIntOrNull()
+                val channelName = ChannelCacheData.channels[channelId]?.name ?: "Unknown"
+
+                if (clid != null && nickname != null && uid != null) {
+                    if (uid in PluginConfig.excludedUIDs) {
+                        logger.info("用户 $nickname (UID: $uid) 在排除列表中，忽略事件")
+                    } else {
+                        userCache[clid] = nickname to uid
+                        logger.info("用户加入: $nickname (clid: $clid, UID: $uid)")
+                        val additionalData = mutableMapOf<String, String>()
+                        additionalData["channelId"] = channelId?.toString() ?: ""
+                        additionalData["channelName"] = channelName
+                        listeners.forEach { listener ->
+                            listener.onUserJoin(uid, nickname, additionalData)
+                        }
                     }
                 }
             }
             line.contains("notifyclientleftview") -> {
                 val clid = Regex("clid=(\\d+)").find(line)?.groupValues?.get(1)?.toIntOrNull()
-                if (clid != null) {
-                    val nickname = userCache[clid] ?: "Unknown"
-                    logger.info("用户离开: $nickname (clid: $clid)")
-                    listeners.forEach { listener ->
-                        listener.onUserLeave(clid, nickname)
+                val (nickname, uid) = userCache[clid] ?: ("Unknown" to "Unknown")
+                if (clid != null && nickname != "Unknown" && uid != "Unknown") {
+                    if (uid == "Unknown" || uid in PluginConfig.excludedUIDs) {
+                        logger.info("用户 $nickname (UID: $uid) 在排除列表中，忽略事件")
+                    } else {
+                        logger.info("用户离开: $nickname (clid: $clid, UID: $uid)")
+                        val additionalData = mutableMapOf<String, String>()
+                        listeners.forEach { listener ->
+                            listener.onUserLeave(uid, nickname, additionalData)
+                        }
+                        userCache.remove(clid)
                     }
-                    userCache.remove(clid)
                 }
             }
             else -> {
@@ -159,5 +189,17 @@ class TeamSpeakPlugin {
                 }
             }
         }
+    }
+
+    private fun parseAndCacheChannels(response: String) {
+        val channelRegex = Regex("cid=(\\d+) channel_name=([^ ]+)")
+        val matches = channelRegex.findAll(response)
+        matches.forEach { matchResult ->
+            val cid = matchResult.groupValues[1].toInt()
+            val channelName = matchResult.groupValues[2].decodeTS3String()
+            val channel = Channel(id = cid, name = channelName)
+            ChannelCacheData.channels[cid] = channel
+        }
+//        ChannelCacheData.save()
     }
 }
