@@ -16,7 +16,7 @@ object TemplateCommand : CompositeCommand(
         val message = """
             /tst add <ID> <事件类型> <模板> - 添加模板
             事件类型: join(加入服务器), leave(加入服务器)
-            模板: 不可包含空格；使用 {nickname} 代表昵称，{uid} 代表 UID
+            模板: 不可包含空格；使用 {nickname} 代表昵称，{uid} 代表 UID，{channelName} 代表频道名称
             /tst remove <ID> - 删除模板
             /tst list - 列出模板
         """.trimIndent()

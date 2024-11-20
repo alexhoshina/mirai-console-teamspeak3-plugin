@@ -12,9 +12,9 @@ object PluginConfig : AutoSavePluginConfig("config") {
     val targetGroupIds by value(mutableListOf<Long>(0,1)) // 目标群组 ID
     val targetUserIds by value(mutableListOf<Long>(0,1)) // 目标用户 ID
     val excludedUIDs by value(mutableListOf<String>("ServerQuery","Unknown")) // 排除的 TS UID
-    val channelCacheRefreshInterval by value<Long>(600000)// 频道缓存刷新间隔，单位毫秒
-    val heartbeatInterval by value<Long>(60000)// 心跳间隔，单位毫秒
-    val listenLoopDelay by value<Long>(1000)// 监听循环延迟，单位毫秒
+    val channelCacheRefreshInterval by value<Long>(600)// 频道缓存刷新间隔，单位秒
+    val heartbeatInterval by value<Long>(60)// 心跳间隔，单位秒
+    val listenLoopDelay by value<Long>(1)// 监听循环延迟，单位秒
     val defaultTemplates by value(mapOf(
             "join" to "用户 {nickname} (UID: {uid}) 加入了服务器",
             "leave" to "用户 {nickname} (UID: {uid}) 离开了服务器"))

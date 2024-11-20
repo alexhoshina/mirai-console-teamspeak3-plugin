@@ -62,8 +62,8 @@ class TeamSpeakPlugin {
 
                     // 获取频道列表并缓存
                     sendCommand(writer, "channellist")
-                    logger.info("频道列表响应: ${readResponse(reader)}")
                     val channelListResponse = readResponse(reader)
+                    logger.info("频道列表响应: $channelListResponse")
                     parseAndCacheChannels(channelListResponse)
 
                     logger.info("开始监听服务器事件...")
@@ -80,7 +80,7 @@ class TeamSpeakPlugin {
                         if (line != null) {
                             handleServerEvent(line, writer, reader, logger)
                         } else {
-                            delay(PluginConfig.listenLoopDelay) // 避免过度占用CPU
+                            delay(PluginConfig.listenLoopDelay * 1000L) // 避免过度占用CPU
                         }
                     }
 
@@ -118,7 +118,9 @@ class TeamSpeakPlugin {
         reader: BufferedReader,
         logger: MiraiLogger
     ) {
-        val data = parseServerMessage(line)
+        // 使用新的解析函数来解析事件
+        val fields = splitFields(line)
+        val data = parseFields(fields)
 
         when {
             line.startsWith("notifycliententerview") -> {
@@ -174,32 +176,136 @@ class TeamSpeakPlugin {
         do {
             line = reader.readLine()
             if (line != null) {
-                response.append(line).append("\n")
+                response.append(line)
+                if (line.startsWith("error id=")) {
+                    break
+                } else {
+                    response.append("\n")
+                }
             }
-        } while (line != null && !line.startsWith("error id="))
+        } while (line != null)
         return response.toString()
     }
 
-    private fun String.decodeTS3String(): String {
-        return this.replace("\\\\", "\\")
-            .replace("\\s", " ")
-            .replace("\\p", "|")
-            .replace("\\/", "/")
-            .replace("\\a", "\u0007")
-            .replace("\\b", "\b")
-            .replace("\\f", "\u000C")
-            .replace("\\n", "\n")
-            .replace("\\r", "\r")
-            .replace("\\t", "\t")
-            .replace("\\v", "\u000B")
+    // 新的解析函数
+
+    // 解码转义字符
+    private fun decodeTS3String(input: String): String {
+        val sb = StringBuilder()
+        var i = 0
+        while (i < input.length) {
+            if (input[i] == '\\' && i + 1 < input.length) {
+                i++
+                when (input[i]) {
+                    's' -> sb.append(' ')
+                    'p' -> sb.append('|')
+                    '/' -> sb.append('/')
+                    '\\' -> sb.append('\\')
+                    'a' -> sb.append('\u0007')
+                    'b' -> sb.append('\b')
+                    'f' -> sb.append('\u000C')
+                    'n' -> sb.append('\n')
+                    'r' -> sb.append('\r')
+                    't' -> sb.append('\t')
+                    'v' -> sb.append('\u000B')
+                    else -> {
+                        // 未知的转义字符，保留原样
+                        sb.append('\\').append(input[i])
+                    }
+                }
+            } else {
+                sb.append(input[i])
+            }
+            i++
+        }
+        return sb.toString()
+    }
+
+    // 分割记录
+    private fun splitRecords(input: String): List<String> {
+        val records = mutableListOf<String>()
+        val sb = StringBuilder()
+        var escape = false
+        for (c in input) {
+            if (escape) {
+                escape = false
+                sb.append('\\').append(c)
+            } else {
+                when (c) {
+                    '\\' -> escape = true
+                    '|' -> {
+                        records.add(sb.toString())
+                        sb.clear()
+                    }
+                    else -> sb.append(c)
+                }
+            }
+        }
+        if (sb.isNotEmpty()) {
+            records.add(sb.toString())
+        }
+        return records
+    }
+
+    // 分割字段
+    private fun splitFields(record: String): List<String> {
+        val fields = mutableListOf<String>()
+        val sb = StringBuilder()
+        var escape = false
+        for (c in record) {
+            if (escape) {
+                escape = false
+                sb.append('\\').append(c)
+            } else {
+                when (c) {
+                    '\\' -> escape = true
+                    ' ' -> {
+                        fields.add(sb.toString())
+                        sb.clear()
+                    }
+                    else -> sb.append(c)
+                }
+            }
+        }
+        if (sb.isNotEmpty()) {
+            fields.add(sb.toString())
+        }
+        return fields
+    }
+
+    // 解析字段为键值对
+    private fun parseFields(fields: List<String>): Map<String, String> {
+        val data = mutableMapOf<String, String>()
+        for (field in fields) {
+            val separatorIndex = field.indexOf('=')
+            if (separatorIndex != -1) {
+                val key = field.substring(0, separatorIndex)
+                val value = field.substring(separatorIndex + 1)
+                data[key] = decodeTS3String(value)
+            }
+        }
+        return data
+    }
+
+    // 解析整个服务器响应
+    private fun parseServerResponse(response: String): List<Map<String, String>> {
+        val records = splitRecords(response)
+        val parsedRecords = mutableListOf<Map<String, String>>()
+        for (record in records) {
+            val fields = splitFields(record)
+            val data = parseFields(fields)
+            parsedRecords.add(data)
+        }
+        return parsedRecords
     }
 
     private fun launchHeartbeat(writer: BufferedWriter, logger: MiraiLogger): Job {
+        val heartbeatInterval = PluginConfig.heartbeatInterval * 1000L // 转换为毫秒
         return CoroutineScope(Dispatchers.IO).launch {
             while (isListening) {
                 try {
                     sendCommand(writer, "version")
-                    delay(PluginConfig.heartbeatInterval) // 每60秒发送一次心跳
+                    delay(heartbeatInterval)
                 } catch (e: Exception) {
                     logger.error("心跳发送失败: ${e.message}", e)
                     break
@@ -213,7 +319,7 @@ class TeamSpeakPlugin {
         reader: BufferedReader,
         logger: MiraiLogger
     ): Job {
-        val refreshInterval = PluginConfig.channelCacheRefreshInterval // 将秒转换为毫秒
+        val refreshInterval = PluginConfig.channelCacheRefreshInterval * 1000L // 转换为毫秒
         return CoroutineScope(Dispatchers.IO).launch {
             while (isListening) {
                 try {
@@ -231,26 +337,11 @@ class TeamSpeakPlugin {
         }
     }
 
-    private fun parseServerMessage(message: String): Map<String, String> {
-        val result = mutableMapOf<String, String>()
-        val params = message.split(' ') // 以空格分隔参数
-        for (param in params) {
-            val separatorIndex = param.indexOf('=')
-            if (separatorIndex != -1) {
-                val key = param.substring(0, separatorIndex)
-                val value = param.substring(separatorIndex + 1).decodeTS3String()
-                result[key] = value
-            }
-        }
-        return result
-    }
-
     private fun parseAndCacheChannels(response: String) {
         val newChannels = mutableMapOf<Int, Channel>()
 
-        val channels = response.split('|') // 频道信息之间以 '|' 分隔
-        for (channelInfo in channels) {
-            val data = parseServerMessage(channelInfo)
+        val records = parseServerResponse(response)
+        for (data in records) {
             val cid = data["cid"]?.toIntOrNull()
             val channelName = data["channel_name"]
             if (cid != null && channelName != null) {
@@ -262,7 +353,6 @@ class TeamSpeakPlugin {
         synchronized(ChannelCacheData) {
             ChannelCacheData.channels.clear()
             ChannelCacheData.channels.putAll(newChannels)
-            
         }
     }
 }
