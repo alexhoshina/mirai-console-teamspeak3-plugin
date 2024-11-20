@@ -11,7 +11,7 @@ object PluginConfig : AutoSavePluginConfig("config") {
     val virtualServerId by value(1) // TeamSpeak 服务器虚拟服务器 ID
     val targetGroupIds by value(mutableListOf<Long>(0,1)) // 目标群组 ID
     val targetUserIds by value(mutableListOf<Long>(0,1)) // 目标用户 ID
-    val excludedUIDs by value(mutableListOf<String>("ServerQuery")) // 排除的 TS UID
+    val excludedUIDs by value(mutableListOf<String>("ServerQuery","Unknown")) // 排除的 TS UID
     val channelCacheRefreshInterval by value<Long>(600000)// 频道缓存刷新间隔，单位毫秒
     val heartbeatInterval by value<Long>(60000)// 心跳间隔，单位毫秒
     val listenLoopDelay by value<Long>(1000)// 监听循环延迟，单位毫秒
