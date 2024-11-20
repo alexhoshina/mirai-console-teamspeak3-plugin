@@ -62,6 +62,7 @@ class TeamSpeakPlugin {
 
                     // 获取频道列表并缓存
                     sendCommand(writer, "channellist")
+                    logger.info("频道列表响应: ${readResponse(reader)}")
                     val channelListResponse = readResponse(reader)
                     parseAndCacheChannels(channelListResponse)
 
@@ -126,6 +127,8 @@ class TeamSpeakPlugin {
                 val uid = data["client_unique_identifier"]
                 val channelId = data["ctid"]?.toIntOrNull()
                 val channelName = ChannelCacheData.channels[channelId]?.name ?: "Unknown"
+                println(channelId)
+                println(ChannelCacheData.channels)
 
                 if (clid != null && nickname != null && uid != null) {
                     // 检查 UID 是否在排除列表中
