@@ -140,7 +140,7 @@ class TeamSpeakPlugin {
                 val clid = Regex("clid=(\\d+)").find(line)?.groupValues?.get(1)?.toIntOrNull()
                 val (nickname, uid) = userCache[clid] ?: ("Unknown" to "Unknown")
                 if (clid != null && nickname != "Unknown" && uid != "Unknown") {
-                    if (uid == "Unknown" || uid in PluginConfig.excludedUIDs) {
+                    if (uid in PluginConfig.excludedUIDs) {
                         logger.info("用户 $nickname (UID: $uid) 在排除列表中，忽略事件")
                     } else {
                         logger.info("用户离开: $nickname (clid: $clid, UID: $uid)")
@@ -150,6 +150,8 @@ class TeamSpeakPlugin {
                         }
                         userCache.remove(clid)
                     }
+                } else if(uid == "Unknown") {
+                    logger.info("用户离开: 未知用户 (clid: $clid)")
                 }
             }
             else -> {
