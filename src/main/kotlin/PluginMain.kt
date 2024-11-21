@@ -32,6 +32,7 @@ object PluginMain : KotlinPlugin(
 ) {
 
     private val teamSpeakPlugin = TeamSpeakPlugin()
+    private var miraiNotifier : MiraiGroupNotifier? = null
 
     override fun onEnable() {
         logger.info( "插件已加载" )
@@ -49,8 +50,8 @@ object PluginMain : KotlinPlugin(
         GlobalEventChannel.subscribeAlways<BotOnlineEvent> { event ->
             if (event.bot.id != 0L) {
                 logger.info( "机器人 ${event.bot.id} 已上线" )
-                val miraiNotifier = MiraiGroupNotifier(PluginConfig.targetGroupIds, PluginConfig.targetUserIds)
-                teamSpeakPlugin.addEventListener(miraiNotifier)
+                miraiNotifier = MiraiGroupNotifier(PluginConfig.targetGroupIds, PluginConfig.targetUserIds)
+                teamSpeakPlugin.addEventListener(miraiNotifier!!)
                 teamSpeakPlugin.startListening(
                     PluginConfig.hostName,
                     PluginConfig.queryPort,
@@ -65,6 +66,7 @@ object PluginMain : KotlinPlugin(
 
     override fun onDisable() {
         logger.info ( "插件开始卸载" )
+        teamSpeakPlugin.removeEventListener(miraiNotifier!!)
         teamSpeakPlugin.stopListening(logger)
         logger.info ( "插件已卸载" )
     }

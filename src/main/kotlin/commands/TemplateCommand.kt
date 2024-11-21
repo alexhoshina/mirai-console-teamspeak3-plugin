@@ -25,16 +25,7 @@ object TemplateCommand : CompositeCommand(
 
     @SubCommand("add")
     suspend fun CommandSender.addTemplate(id: String, eventType: String, content: String) {
-        if (user !is User) {
-            sendMessage("本命令只能由 QQ 用户使用")
-            return
-        }
-        val qqId = user!!.id
-        val uid = UserBindingData.bindings[qqId]
-        if (uid == null) {
-            sendMessage("你尚未绑定 TeamSpeak UID，请先使用 /tsb bind <UID> 命令进行绑定")
-            return
-        }
+        val uid = getUserUID() ?: return
         val template = Template(id = id, content = content, boundUID = uid, eventType = eventType)
         TemplateData.templates.add(template)
         sendMessage("模板添加成功")
@@ -42,22 +33,26 @@ object TemplateCommand : CompositeCommand(
 
     @SubCommand("remove")
     suspend fun CommandSender.removeTemplate(id: String) {
-        if (user !is User) {
-            sendMessage("本命令只能由 QQ 用户使用")
-            return
-        }
-        val qqId = user!!.id
-        val uid = UserBindingData.bindings[qqId]
-        if (uid == null) {
-            sendMessage("你尚未绑定 TeamSpeak UID，请先使用 /tsb bind <UID> 命令进行绑定")
-            return
-        }
+        val uid = getUserUID() ?: return
         val removed = TemplateData.templates.removeIf { it.id == id && it.boundUID == uid }
         if (removed) {
             sendMessage("模板已删除")
         } else {
             sendMessage("未找到你创建的模板 ID 为 $id 的模板")
         }
+    }
+
+    private suspend fun CommandSender.getUserUID(): String? {
+        if (user !is User) {
+            sendMessage("本命令只能由 QQ 用户使用")
+            return null
+        }
+        val qqId = user!!.id
+        val uid = UserBindingData.bindings[qqId]
+        if (uid == null) {
+            sendMessage("你尚未绑定 TeamSpeak UID，请先使用 /tsb bind <UID> 命令进行绑定")
+        }
+        return uid
     }
 
     @SubCommand("list")

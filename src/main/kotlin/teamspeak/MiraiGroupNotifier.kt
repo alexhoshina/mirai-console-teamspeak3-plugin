@@ -4,7 +4,6 @@ import net.mamoe.mirai.Bot
 import net.mamoe.mirai.contact.Friend
 import net.mamoe.mirai.contact.Group
 import org.evaz.mirai.plugin.data.TemplateData
-import org.evaz.mirai.plugin.data.Template
 import org.evaz.mirai.plugin.config.PluginConfig
 
 class MiraiGroupNotifier(
@@ -34,21 +33,15 @@ class MiraiGroupNotifier(
     }
 
     override suspend fun onUserJoin(uid: String, nickname: String, additionalData: Map<String, String>) {
-        val template = selectTemplate(uid, "join")
-        val data = additionalData.toMutableMap()
-        data["nickname"] = nickname
-        data["uid"] = uid
-        val message = formatMessage(template, data)
-        getGroups().forEach { group ->
-            group.sendMessage(message)
-        }
-        getUsers().forEach { user ->
-            user.sendMessage(message)
-        }
+        sendMessageToTargets(uid, nickname, additionalData, "join")
     }
 
     override suspend fun onUserLeave(uid: String, nickname: String, additionalData: Map<String, String>) {
-        val template = selectTemplate(uid, "leave")
+        sendMessageToTargets(uid, nickname, additionalData, "leave")
+    }
+
+    private suspend fun sendMessageToTargets(uid: String, nickname: String, additionalData: Map<String, String>, eventType: String) {
+        val template = selectTemplate(uid, eventType)
         val data = additionalData.toMutableMap()
         data["nickname"] = nickname
         data["uid"] = uid
@@ -60,7 +53,6 @@ class MiraiGroupNotifier(
             user.sendMessage(message)
         }
     }
-
 
     private fun formatMessage(template: String, data: Map<String, String>): String {
         var message = template
@@ -70,12 +62,6 @@ class MiraiGroupNotifier(
         return message
     }
 
-    companion object {
-       private val defaultTemplates = PluginConfig.defaultTemplates
-//           mapOf(
-//            "join" to "用户 {nickname} (UID: {uid}) 加入了服务器",
-//            "leave" to "用户 {nickname} (UID: {uid}) 离开了服务器"
-//        )
-    }
+    companion object { private val defaultTemplates = PluginConfig.defaultTemplates }
 
 }

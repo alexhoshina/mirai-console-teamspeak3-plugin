@@ -5,7 +5,6 @@ import kotlinx.coroutines.channels.Channel as CoroutineChannel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.mamoe.mirai.utils.MiraiLogger
-import net.mamoe.mirai.utils.warning
 import org.evaz.mirai.plugin.config.PluginConfig
 import org.evaz.mirai.plugin.data.TSChannel
 import org.evaz.mirai.plugin.data.ChannelCacheData
@@ -17,8 +16,8 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.ArrayDeque
 
 class TeamSpeakPlugin {
-
-    private val userCache = ConcurrentHashMap<Int, Pair<String, String>>()  // clid -> (nickname, uid)
+    // clid -> (nickname, uid)
+    private val userCache = ConcurrentHashMap<Int, Pair<String, String>>()
 
     @Volatile
     private var socket: Socket? = null
@@ -78,14 +77,13 @@ class TeamSpeakPlugin {
 
                     // 启动消息处理协程
                     messageProcessingJob = scope.launch {
+                        val messageInterval = PluginConfig.listenLoopDelay * 1000L
                         while (isListening && isActive) {
+                            delay(messageInterval)
                             when (val message = messageChannel.receive()) {
                                 is EventNotification -> {
                                     logger.info("处理事件通知: ${message.eventLine}")
                                     handleServerEvent(message.eventLine, logger)
-                                }
-                                else -> {
-                                    logger.warning("收到未知消息类型: $message")
                                 }
                             }
                         }
@@ -127,9 +125,6 @@ class TeamSpeakPlugin {
                 }
             } catch (e: Exception) {
                 logger.error("发生异常: ${e.message}", e)
-            } finally {
-//                stopListening(logger)
-//                logger.info("已停止监听并关闭连接")
             }
         }
     }
@@ -144,18 +139,10 @@ class TeamSpeakPlugin {
         heartbeatJob?.cancel()
         refreshJob?.cancel()
 
-//        runBlocking {
-//            readingJob?.join()
-//            messageProcessingJob?.join()
-//            heartbeatJob?.join()
-//            refreshJob?.join()
-//        }
-
-
         try {
             socket?.close()
         } catch (e: Exception) {
-            // 忽略关闭异常
+            logger.error("关闭连接时发生异常: ${e.message}", e)
         }
         logger.info("已关闭连接")
     }
@@ -169,13 +156,9 @@ class TeamSpeakPlugin {
             try {
                 val responseDeferred = CompletableDeferred<String>()
                 responseQueue.addLast(responseDeferred)
-
                 sendCommand(writer, command)
-                //            logger.info("发送命令: $command")
-
                 // 等待响应
                 val response = responseDeferred.await()
-                //            logger.info("收到响应: $response")
                 response
             } catch (e: SocketException){
                 logger.debug("Socket连接已关闭")
@@ -199,9 +182,7 @@ class TeamSpeakPlugin {
                 while (isListening && isActive) {
                     val line = reader.readLine()
                     if (line != null) {
-//                    logger.info("收到行: $line")
                         if (line.startsWith("notify")) {
-//                        logger.info("收到事件通知: $line")
                             // 事件通知
                             messageChannel.send(EventNotification(line))
                         } else {
@@ -231,7 +212,6 @@ class TeamSpeakPlugin {
                             }
                         }
                     } else {
-                        // 连接已关闭
                         break
                     }
                 }
@@ -242,7 +222,6 @@ class TeamSpeakPlugin {
            }
         }
     }
-
 
     private suspend fun handleServerEvent(eventLine: String, logger: MiraiLogger) {
         val data = parseFields(splitFields(eventLine))
@@ -298,8 +277,7 @@ class TeamSpeakPlugin {
             delay(heartbeatInterval) // 延迟，确保初始化完成
             while (isListening && isActive) {
                 try {
-                    val versionResponse = executeCommand(writer, "version", logger)
-//                    logger.info("心跳响应: $versionResponse")
+                    executeCommand(writer, "version", logger)
                     delay(heartbeatInterval)
                 } catch (e: CancellationException) {
                     logger.info("心跳协程已关闭....")
@@ -339,7 +317,6 @@ class TeamSpeakPlugin {
     }
 
     // 解析和解码函数
-
     private fun decodeTS3String(input: String): String {
         val sb = StringBuilder()
         var i = 0
@@ -423,7 +400,6 @@ class TeamSpeakPlugin {
                 newChannels[cid] = channel
             }
         }
-
         synchronized(ChannelCacheData) {
             ChannelCacheData.channels.clear()
             ChannelCacheData.channels.putAll(newChannels)
