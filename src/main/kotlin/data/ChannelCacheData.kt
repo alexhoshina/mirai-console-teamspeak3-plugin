@@ -11,5 +11,5 @@ data class Channel(
 )
 
 object ChannelCacheData : AutoSavePluginData("channelCache") {
-    var channels by value(mutableMapOf<Int, Channel>())
+    var channels by value(mutableMapOf<Int, TSChannel>())
 }

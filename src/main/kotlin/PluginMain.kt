@@ -64,7 +64,8 @@ object PluginMain : KotlinPlugin(
     }
 
     override fun onDisable() {
+        logger.info ( "插件开始卸载" )
+        teamSpeakPlugin.stopListening(logger)
         logger.info ( "插件已卸载" )
-        teamSpeakPlugin.stopListening()
     }
 }

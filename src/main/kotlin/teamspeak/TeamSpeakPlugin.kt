@@ -1,14 +1,20 @@
 package org.evaz.mirai.plugin.teamspeak
 
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel as CoroutineChannel
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import net.mamoe.mirai.utils.MiraiLogger
+import net.mamoe.mirai.utils.warning
 import org.evaz.mirai.plugin.config.PluginConfig
+import org.evaz.mirai.plugin.data.TSChannel
 import org.evaz.mirai.plugin.data.ChannelCacheData
-import org.evaz.mirai.plugin.data.Channel
 import java.io.*
 import java.net.Socket
+import java.net.SocketException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.ArrayDeque
 
 class TeamSpeakPlugin {
 
@@ -31,6 +37,20 @@ class TeamSpeakPlugin {
         listeners.remove(listener)
     }
 
+    // 消息通道，用于从读取协程传递消息
+    private val messageChannel = CoroutineChannel<ServerMessage>(CoroutineChannel.UNLIMITED)
+
+    // 响应队列
+    private val responseQueue = ArrayDeque<CompletableDeferred<String>>()
+
+    // 用于同步发送命令的 Mutex，确保一次只发送一个命令
+    private val commandMutex = Mutex()
+
+    private var readingJob: Job? = null
+    private var messageProcessingJob: Job? = null
+    private var heartbeatJob: Job? = null
+    private var refreshJob: Job? = null
+
     fun startListening(
         host: String,
         queryPort: Int,
@@ -49,61 +69,121 @@ class TeamSpeakPlugin {
                     val writer = BufferedWriter(OutputStreamWriter(sock.getOutputStream(), Charsets.UTF_8))
                     val reader = BufferedReader(InputStreamReader(sock.getInputStream(), Charsets.UTF_8))
 
-                    logger.info("服务器响应: ${reader.readLine()}")
+                    // 在启动读取协程之前读取初始响应
+                    val initialResponse = reader.readLine()
+                    logger.info("服务器响应: $initialResponse")
 
-                    sendCommand(writer, "login $username $password")
-                    logger.info("登录响应: ${readResponse(reader)}")
+                    // 启动读取协程
+                    readingJob = startReadingJob(reader, logger)
 
-                    sendCommand(writer, "use sid=$virtualServerId")
-                    logger.info("选择服务器响应: ${readResponse(reader)}")
+                    // 启动消息处理协程
+                    messageProcessingJob = scope.launch {
+                        while (isListening && isActive) {
+                            when (val message = messageChannel.receive()) {
+                                is EventNotification -> {
+                                    logger.info("处理事件通知: ${message.eventLine}")
+                                    handleServerEvent(message.eventLine, logger)
+                                }
+                                else -> {
+                                    logger.warning("收到未知消息类型: $message")
+                                }
+                            }
+                        }
+                    }
 
-                    sendCommand(writer, "servernotifyregister event=server")
-                    logger.info("注册事件通知响应: ${readResponse(reader)}")
+                    // 初始化操作
+                    val loginResponse = executeCommand(writer, "login $username $password", logger)
+                    logger.info("登录响应: $loginResponse")
 
-                    // 获取频道列表并缓存
-                    sendCommand(writer, "channellist")
-                    val channelListResponse = readResponse(reader)
+                    val useResponse = executeCommand(writer, "use sid=$virtualServerId", logger)
+                    logger.info("选择服务器响应: $useResponse")
+
+                    // 注册服务器事件通知
+                    val notifyResponse = executeCommand(writer, "servernotifyregister event=server", logger)
+                    logger.info("注册服务器事件通知响应: $notifyResponse")
+
+                    // 注册频道事件通知（id=0 表示所有频道）
+                    val channelNotifyResponse = executeCommand(writer, "servernotifyregister event=channel id=0", logger)
+                    logger.info("注册频道事件通知响应: $channelNotifyResponse")
+
+                    val channelListResponse = executeCommand(writer, "channellist", logger)
                     logger.info("频道列表响应: $channelListResponse")
                     parseAndCacheChannels(channelListResponse)
 
                     logger.info("开始监听服务器事件...")
 
-                    // 启动心跳协程
-                    val heartbeatJob = launchHeartbeat(writer, logger)
+                    // 启动心跳和缓存刷新协程
+                    heartbeatJob = launchHeartbeat(writer, logger)
+                    refreshJob = launchChannelCacheRefresh(writer, logger)
 
-                    // 启动刷新频道列表的协程
-                    val refreshJob = launchChannelCacheRefresh(writer, reader, logger)
+                    // 等待协程完成
+                    heartbeatJob?.join()
+                    refreshJob?.join()
+                    readingJob?.join()
+                    messageProcessingJob?.join()
 
-                    // 监听服务器事件
-                    while (isListening && !sock.isClosed) {
-                        val line = reader.readLine()
-                        if (line != null) {
-                            handleServerEvent(line, writer, reader, logger)
-                        } else {
-                            delay(PluginConfig.listenLoopDelay * 1000L) // 避免过度占用CPU
-                        }
-                    }
-
-                    heartbeatJob.cancel()
-                    refreshJob.cancel()
-                    sendCommand(writer, "logout")
+                    executeCommand(writer, "logout", logger)
                     logger.info("已注销登录")
                 }
             } catch (e: Exception) {
                 logger.error("发生异常: ${e.message}", e)
             } finally {
-                stopListening()
-                logger.info("已停止监听并关闭连接")
+//                stopListening(logger)
+//                logger.info("已停止监听并关闭连接")
             }
         }
     }
 
-    fun stopListening() {
+    fun stopListening(logger: MiraiLogger) {
         isListening = false
+
+        logger.info("正在停止监听...")
+        logger.info("等待所有协程完成...")
+        readingJob?.cancel()
+        messageProcessingJob?.cancel()
+        heartbeatJob?.cancel()
+        refreshJob?.cancel()
+
+//        runBlocking {
+//            readingJob?.join()
+//            messageProcessingJob?.join()
+//            heartbeatJob?.join()
+//            refreshJob?.join()
+//        }
+
+
         try {
             socket?.close()
         } catch (e: Exception) {
             // 忽略关闭异常
+        }
+        logger.info("已关闭连接")
+    }
+
+    private suspend fun executeCommand(
+        writer: BufferedWriter,
+        command: String,
+        logger: MiraiLogger
+    ): String {
+        return commandMutex.withLock {
+            try {
+                val responseDeferred = CompletableDeferred<String>()
+                responseQueue.addLast(responseDeferred)
+
+                sendCommand(writer, command)
+                //            logger.info("发送命令: $command")
+
+                // 等待响应
+                val response = responseDeferred.await()
+                //            logger.info("收到响应: $response")
+                response
+            } catch (e: SocketException){
+                logger.debug("Socket连接已关闭")
+                ""
+            } catch (e: Exception) {
+                logger.error("执行命令时发生异常: ${e.message}", e)
+                ""
+            }
         }
     }
 
@@ -112,25 +192,67 @@ class TeamSpeakPlugin {
         writer.flush()
     }
 
-    private suspend fun handleServerEvent(
-        line: String,
-        writer: BufferedWriter,
-        reader: BufferedReader,
-        logger: MiraiLogger
-    ) {
-        // 使用新的解析函数来解析事件
-        val fields = splitFields(line)
-        val data = parseFields(fields)
+    private fun startReadingJob(reader: BufferedReader, logger: MiraiLogger): Job {
+        return CoroutineScope(Dispatchers.IO).launch {
+           try {
+                val buffer = mutableListOf<String>()
+                while (isListening && isActive) {
+                    val line = reader.readLine()
+                    if (line != null) {
+//                    logger.info("收到行: $line")
+                        if (line.startsWith("notify")) {
+//                        logger.info("收到事件通知: $line")
+                            // 事件通知
+                            messageChannel.send(EventNotification(line))
+                        } else {
+                            buffer.add(line)
+                            // 检查缓冲区中是否有事件通知
+                            val iterator = buffer.iterator()
+                            while (iterator.hasNext()) {
+                                val bufferedLine = iterator.next()
+                                if (bufferedLine.startsWith("notify")) {
+                                    // 将事件通知从缓冲区中移除并处理
+                                    iterator.remove()
+                                    logger.info("从缓冲区中处理事件通知: $bufferedLine")
+                                    messageChannel.send(EventNotification(bufferedLine))
+                                }
+                            }
+                            if (line.startsWith("error id=") || line.contains("error id=")) {
+                                // 命令响应结束
+                                val response = buffer.joinToString("\n")
+                                buffer.clear()
+                                // 从响应队列中取出对应的 CompletableDeferred
+                                val responseDeferred = responseQueue.pollFirst()
+                                if (responseDeferred != null) {
+                                    responseDeferred.complete(response)
+                                } else {
+                                    logger.error("收到未匹配的命令响应: $response")
+                                }
+                            }
+                        }
+                    } else {
+                        // 连接已关闭
+                        break
+                    }
+                }
+           } catch (e: SocketException){
+                logger.debug("Socket连接已关闭")
+           } catch (e: Exception) {
+               logger.error("读取协程发生异常: ${e.message}", e)
+           }
+        }
+    }
 
+
+    private suspend fun handleServerEvent(eventLine: String, logger: MiraiLogger) {
+        val data = parseFields(splitFields(eventLine))
         when {
-            line.startsWith("notifycliententerview") -> {
+            eventLine.startsWith("notifycliententerview") -> {
                 val clid = data["clid"]?.toIntOrNull()
                 val nickname = data["client_nickname"]
                 val uid = data["client_unique_identifier"]
                 val channelId = data["ctid"]?.toIntOrNull()
                 val channelName = ChannelCacheData.channels[channelId]?.name ?: "Unknown"
-                println(channelId)
-                println(ChannelCacheData.channels)
 
                 if (clid != null && nickname != null && uid != null) {
                     // 检查 UID 是否在排除列表中
@@ -148,7 +270,7 @@ class TeamSpeakPlugin {
                     }
                 }
             }
-            line.startsWith("notifyclientleftview") -> {
+            eventLine.startsWith("notifyclientleftview") -> {
                 val clid = data["clid"]?.toIntOrNull()
                 if (clid != null) {
                     val (nickname, uid) = userCache[clid] ?: ("Unknown" to "Unknown")
@@ -165,31 +287,59 @@ class TeamSpeakPlugin {
                 }
             }
             else -> {
-                // 处理其他类型的消息或事件
+                logger.warning("未处理的事件类型: $eventLine")
             }
         }
     }
 
-    private fun readResponse(reader: BufferedReader): String {
-        val response = StringBuilder()
-        var line: String?
-        do {
-            line = reader.readLine()
-            if (line != null) {
-                response.append(line)
-                if (line.startsWith("error id=")) {
+    private fun launchHeartbeat(writer: BufferedWriter, logger: MiraiLogger): Job {
+        val heartbeatInterval = PluginConfig.heartbeatInterval * 1000L // 转换为毫秒
+        return CoroutineScope(Dispatchers.IO).launch {
+            delay(heartbeatInterval) // 延迟，确保初始化完成
+            while (isListening && isActive) {
+                try {
+                    val versionResponse = executeCommand(writer, "version", logger)
+//                    logger.info("心跳响应: $versionResponse")
+                    delay(heartbeatInterval)
+                } catch (e: CancellationException) {
+                    logger.info("心跳协程已关闭....")
+                } catch (e: SocketException) {
+                    logger.debug("Socket连接已关闭")
+                } catch (e: Exception) {
+                    logger.error("心跳发送失败: ${e.message}", e)
                     break
-                } else {
-                    response.append("\n")
                 }
             }
-        } while (line != null)
-        return response.toString()
+        }
     }
 
-    // 新的解析函数
+    private fun launchChannelCacheRefresh(
+        writer: BufferedWriter,
+        logger: MiraiLogger
+    ): Job {
+        val refreshInterval = PluginConfig.channelCacheRefreshInterval * 1000L // 转换为毫秒
+        return CoroutineScope(Dispatchers.IO).launch {
+            delay(refreshInterval) // 延迟，确保初始化完成
+            while (isListening && isActive) {
+                try {
+                    logger.info("正在刷新频道列表缓存...")
+                    val channelListResponse = executeCommand(writer, "channellist", logger)
+                    parseAndCacheChannels(channelListResponse)
+                    logger.info("频道列表缓存已更新")
+                    delay(refreshInterval)
+                } catch (e: CancellationException) {
+                    logger.info("频道列表缓存协程已关闭....")
+                } catch (e: SocketException) {
+                    logger.debug("Socket连接已关闭")
+                } catch (e: Exception) {
+                    logger.error("刷新频道列表缓存时发生异常: ${e.message}", e)
+                }
+            }
+        }
+    }
 
-    // 解码转义字符
+    // 解析和解码函数
+
     private fun decodeTS3String(input: String): String {
         val sb = StringBuilder()
         var i = 0
@@ -221,41 +371,14 @@ class TeamSpeakPlugin {
         return sb.toString()
     }
 
-    // 分割记录
-    private fun splitRecords(input: String): List<String> {
-        val records = mutableListOf<String>()
-        val sb = StringBuilder()
-        var escape = false
-        for (c in input) {
-            if (escape) {
-                escape = false
-                sb.append('\\').append(c)
-            } else {
-                when (c) {
-                    '\\' -> escape = true
-                    '|' -> {
-                        records.add(sb.toString())
-                        sb.clear()
-                    }
-                    else -> sb.append(c)
-                }
-            }
-        }
-        if (sb.isNotEmpty()) {
-            records.add(sb.toString())
-        }
-        return records
-    }
-
-    // 分割字段
     private fun splitFields(record: String): List<String> {
         val fields = mutableListOf<String>()
         val sb = StringBuilder()
         var escape = false
         for (c in record) {
             if (escape) {
+                sb.append(c)
                 escape = false
-                sb.append('\\').append(c)
             } else {
                 when (c) {
                     '\\' -> escape = true
@@ -273,7 +396,6 @@ class TeamSpeakPlugin {
         return fields
     }
 
-    // 解析字段为键值对
     private fun parseFields(fields: List<String>): Map<String, String> {
         val data = mutableMapOf<String, String>()
         for (field in fields) {
@@ -287,65 +409,17 @@ class TeamSpeakPlugin {
         return data
     }
 
-    // 解析整个服务器响应
-    private fun parseServerResponse(response: String): List<Map<String, String>> {
-        val records = splitRecords(response)
-        val parsedRecords = mutableListOf<Map<String, String>>()
+    private fun parseAndCacheChannels(response: String) {
+        val newChannels = mutableMapOf<Int, TSChannel>()
+
+        val records = response.split('|') // 按未转义的 '|' 分割
         for (record in records) {
             val fields = splitFields(record)
             val data = parseFields(fields)
-            parsedRecords.add(data)
-        }
-        return parsedRecords
-    }
-
-    private fun launchHeartbeat(writer: BufferedWriter, logger: MiraiLogger): Job {
-        val heartbeatInterval = PluginConfig.heartbeatInterval * 1000L // 转换为毫秒
-        return CoroutineScope(Dispatchers.IO).launch {
-            while (isListening) {
-                try {
-                    sendCommand(writer, "version")
-                    delay(heartbeatInterval)
-                } catch (e: Exception) {
-                    logger.error("心跳发送失败: ${e.message}", e)
-                    break
-                }
-            }
-        }
-    }
-
-    private fun launchChannelCacheRefresh(
-        writer: BufferedWriter,
-        reader: BufferedReader,
-        logger: MiraiLogger
-    ): Job {
-        val refreshInterval = PluginConfig.channelCacheRefreshInterval * 1000L // 转换为毫秒
-        return CoroutineScope(Dispatchers.IO).launch {
-            while (isListening) {
-                try {
-                    delay(refreshInterval)
-                    if (!isListening) break
-                    logger.info("正在刷新频道列表缓存...")
-                    sendCommand(writer, "channellist")
-                    val channelListResponse = readResponse(reader)
-                    parseAndCacheChannels(channelListResponse)
-                    logger.info("频道列表缓存已更新")
-                } catch (e: Exception) {
-                    logger.error("刷新频道列表缓存时发生异常: ${e.message}", e)
-                }
-            }
-        }
-    }
-
-    private fun parseAndCacheChannels(response: String) {
-        val newChannels = mutableMapOf<Int, Channel>()
-
-        val records = parseServerResponse(response)
-        for (data in records) {
             val cid = data["cid"]?.toIntOrNull()
             val channelName = data["channel_name"]
             if (cid != null && channelName != null) {
-                val channel = Channel(id = cid, name = channelName)
+                val channel = TSChannel(id = cid, name = channelName)
                 newChannels[cid] = channel
             }
         }
@@ -355,4 +429,8 @@ class TeamSpeakPlugin {
             ChannelCacheData.channels.putAll(newChannels)
         }
     }
+
+    // 定义消息类型
+    private sealed class ServerMessage
+    private data class EventNotification(val eventLine: String) : ServerMessage()
 }

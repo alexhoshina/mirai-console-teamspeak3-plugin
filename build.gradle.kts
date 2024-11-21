@@ -6,8 +6,8 @@ plugins {
     id("net.mamoe.mirai-console") version "2.13.2"
 }
 
-group = "org.example"
-version = "0.5.0"
+group = "org.evaz"
+version = "1.1.0"
 
 repositories {
     if (System.getenv("CI")?.toBoolean() != true) {
