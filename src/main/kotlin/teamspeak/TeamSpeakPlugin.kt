@@ -50,6 +50,16 @@ class TeamSpeakPlugin {
     private var heartbeatJob: Job? = null
     private var refreshJob: Job? = null
 
+
+    /**
+     * 启动监听
+     * @param host TeamSpeak 服务器地址
+     * @param queryPort TeamSpeak 服务器 Query 端口
+     * @param username TeamSpeak 服务器 Query 用户名
+     * @param password TeamSpeak 服务器 Query 密码
+     * @param virtualServerId TeamSpeak 服务器虚拟服务器 ID
+     * @param logger MiraiLogger
+     */
     fun startListening(
         host: String,
         queryPort: Int,
