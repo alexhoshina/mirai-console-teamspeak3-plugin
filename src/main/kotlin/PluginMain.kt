@@ -6,6 +6,7 @@ import net.mamoe.mirai.console.plugin.jvm.KotlinPlugin
 import net.mamoe.mirai.event.GlobalEventChannel
 import net.mamoe.mirai.event.events.BotOnlineEvent
 import org.evaz.mirai.plugin.commands.BindingCommand
+import org.evaz.mirai.plugin.commands.ConfigCommand
 import org.evaz.mirai.plugin.commands.TemplateCommand
 import org.evaz.mirai.plugin.config.PluginConfig
 import org.evaz.mirai.plugin.data.ChannelCacheData
@@ -30,28 +31,28 @@ object PluginMain : KotlinPlugin(
         )
     }
 ) {
-
     private val teamSpeakPlugin = TeamSpeakPlugin()
     private var miraiNotifier : MiraiGroupNotifier? = null
 
     override fun onEnable() {
         logger.info( "插件已加载" )
+        // 加载配置与数据
         PluginConfig.reload()
         TemplateData.reload()
         UserBindingData.reload()
         ChannelCacheData.reload()
 
-        logger.info( "目标群组ID: ${PluginConfig.targetGroupIds}" )
-
         // 注册命令
         CommandManager.registerCommand(BindingCommand, true)
         CommandManager.registerCommand(TemplateCommand, true)
+        CommandManager.registerCommand(ConfigCommand, true)
 
+        // 监听机器人上线事件
         GlobalEventChannel.subscribeAlways<BotOnlineEvent> { event ->
             if (event.bot.id != 0L) {
-                logger.info( "机器人 ${event.bot.id} 已上线" )
-                miraiNotifier = MiraiGroupNotifier(PluginConfig.targetGroupIds, PluginConfig.targetUserIds)
-                teamSpeakPlugin.addEventListener(miraiNotifier!!)
+                miraiNotifier = MiraiGroupNotifier(PluginConfig.targetGroupIds, PluginConfig.targetUserIds) // 初始化通知器
+                teamSpeakPlugin.addEventListener(miraiNotifier!!) // 添加事件监听
+                // 启动监听
                 teamSpeakPlugin.startListening(
                     PluginConfig.hostName,
                     PluginConfig.queryPort,
