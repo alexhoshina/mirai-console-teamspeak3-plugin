@@ -4,10 +4,10 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel as CoroutineChannel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import net.mamoe.mirai.utils.MiraiLogger
 import org.evaz.mirai.plugin.config.PluginConfig
-import org.evaz.mirai.plugin.data.TSChannel
+import net.mamoe.mirai.utils.MiraiLogger
 import org.evaz.mirai.plugin.data.ChannelCacheData
+import org.evaz.mirai.plugin.teamspeak.entity.Channel
 import java.io.*
 import java.net.Socket
 import java.net.SocketException
@@ -241,7 +241,7 @@ class TeamSpeakPlugin {
                 val nickname = data["client_nickname"]
                 val uid = data["client_unique_identifier"]
                 val channelId = data["ctid"]?.toIntOrNull()
-                val channelName = ChannelCacheData.channels[channelId]?.name ?: "Unknown"
+                val channelName = ChannelCacheData.channels[channelId]?.channelName ?: "Unknown"
 
                 if (clid != null && nickname != null && uid != null) {
                     // 检查 UID 是否在排除列表中
@@ -397,7 +397,7 @@ class TeamSpeakPlugin {
     }
 
     private fun parseAndCacheChannels(response: String) {
-        val newChannels = mutableMapOf<Int, TSChannel>()
+        val newChannels = mutableMapOf<Int, Channel>()
 
         val records = response.split('|') // 按未转义的 '|' 分割
         for (record in records) {
@@ -406,7 +406,10 @@ class TeamSpeakPlugin {
             val cid = data["cid"]?.toIntOrNull()
             val channelName = data["channel_name"]
             if (cid != null && channelName != null) {
-                val channel = TSChannel(id = cid, name = channelName)
+                val channel = Channel.Builder()
+                    .cid(cid)
+                    .channelName(channelName)
+                    .build()
                 newChannels[cid] = channel
             }
         }
@@ -419,4 +422,7 @@ class TeamSpeakPlugin {
     // 定义消息类型
     private sealed class ServerMessage
     private data class EventNotification(val eventLine: String) : ServerMessage()
+
+
+
 }
