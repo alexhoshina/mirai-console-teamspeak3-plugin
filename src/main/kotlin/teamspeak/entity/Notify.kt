@@ -1,7 +1,7 @@
 package org.evaz.mirai.plugin.teamspeak.entity
 
-data class notify(
-    var type: String,
+data class Notify(
+    var type: NotifyType,
     var cfid: Int,
     var ctid: Int,
     var reasonid: Int,

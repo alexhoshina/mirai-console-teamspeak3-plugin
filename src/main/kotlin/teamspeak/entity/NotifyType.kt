@@ -1,6 +1,6 @@
 package org.evaz.mirai.plugin.teamspeak.entity
 
-enum class EventType {
+enum class NotifyType {
     notifycliententerview,
     notifyclientmoved,
     notifytextmessage,
