@@ -52,3 +52,26 @@ defaultTemplates: # 默认模板
 - `{uid}` 用户 UID
 - `{channelName}` 频道名称
 - `{channelId}` 频道 ID
+
+## 开发与发布
+
+### 自动发布
+本项目配置了 GitHub Actions 自动发布流程。当推送符合 `v*.*.*` 格式的标签时（例如 `v1.1.0`），会自动：
+1. 构建项目并生成 JAR 文件
+2. 生成更新日志（基于 Git 提交记录）
+3. 创建 GitHub Release 并上传构建产物
+
+#### 发布步骤
+```bash
+# 1. 更新 build.gradle.kts 中的版本号
+# 2. 提交并推送更改
+git add .
+git commit -m "chore: bump version to 1.2.0"
+git push
+
+# 3. 创建并推送标签
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+发布完成后，可以在 [Releases 页面](../../releases) 查看和下载构建产物。
