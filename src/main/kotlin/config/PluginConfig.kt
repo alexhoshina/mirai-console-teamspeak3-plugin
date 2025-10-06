@@ -21,8 +21,8 @@ object PluginConfig : AutoSavePluginConfig("config") {
     val targetUserIds by value(mutableListOf<Long>(0,1)) // 目标用户 ID
     @ValueDescription("排除的 TS UID")
     val excludedUIDs by value(mutableListOf("ServerQuery","Unknown")) // 排除的 TS UID
-    @ValueDescription("频道缓存刷新间隔，单位秒")
-    val channelCacheRefreshInterval by value<Long>(600)// 频道缓存刷新间隔，单位秒
+    @ValueDescription("频道缓存刷新间隔（已废弃，现使用事件驱动的实时更新），单位秒")
+    val channelCacheRefreshInterval by value<Long>(600)// 频道缓存刷新间隔（已废弃）
     @ValueDescription("心跳间隔，单位秒")
     val heartbeatInterval by value<Long>(60)// 心跳间隔，单位秒
     @ValueDescription("监听循环延迟，单位秒")
