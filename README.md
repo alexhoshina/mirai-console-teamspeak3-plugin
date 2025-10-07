@@ -1,6 +1,13 @@
 # mirai-console-teamspeak3-plugin
 监听 TeamSpeak3 服务器的人员进出事件，并通过 Mirai 播报
 
+## ✨ 最新优化（v1.1.0+）
+
+- 🚀 **性能提升** - 使用事件驱动替代定期轮询，减少不必要的网络请求
+- 📦 **代码重构** - 模块化设计，将单一大文件拆分为多个职责明确的类
+- 🔄 **实时更新** - 频道名称变化实时同步，无需等待刷新周期
+- 🎯 **更多事件** - 支持频道创建、编辑、删除等事件的实时监听
+
 ## 开始使用
 将插件 jar 包放入 Mirai 的 `plugins` 文件夹下，然后重启 Mirai 即可。  
 
@@ -27,7 +34,7 @@ targetUserIds: # 播报的目标用户列表
 excludedUIDs: # 排除的用户列表(填写需要排除的用户的 UID)
   - ServerQuery # 排除ServerQuery
   - Unknown # 排除Unknown(Unknown是在代码中产生的，并不存在在TeamSpeak3服务器中)
-channelCacheRefreshInterval: 600 # 频道缓存刷新间隔(秒)
+channelCacheRefreshInterval: 600 # 频道缓存刷新间隔（已废弃，现使用事件驱动实时更新）
 heartbeatInterval: 60 # 心跳间隔(秒)
 listenLoopDelay: 1 # 监听循环延迟(秒)
 defaultTemplates: # 默认模板
@@ -53,6 +60,28 @@ defaultTemplates: # 默认模板
 - `{channelName}` 频道名称
 - `{channelId}` 频道 ID
 
+## 架构优化说明
+
+### 代码结构
+插件采用模块化设计，将原来的单一大类拆分为多个职责明确的组件：
+
+- **TS3MessageParser** - 负责 TeamSpeak3 协议消息的解析和解码
+- **TS3CommandExecutor** - 负责命令执行和响应队列管理
+- **TS3EventHandler** - 负责处理所有 TeamSpeak3 事件通知
+- **TeamSpeakPlugin** - 负责连接管理和协程调度
+
+### 性能优化
+1. **事件驱动更新** - 使用 TeamSpeak3 的原生事件通知机制，实时响应频道变化
+2. **减少轮询** - 移除定期刷新频道缓存的协程，减少不必要的网络请求
+3. **实时同步** - 频道的创建、编辑、删除操作立即同步到本地缓存
+
+### 支持的事件
+- `notifycliententerview` - 用户加入服务器
+- `notifyclientleftview` - 用户离开服务器
+- `notifychannelcreated` - 频道创建
+- `notifychanneledited` - 频道编辑
+- `notifychanneldeleted` - 频道删除
+- `notifyclientmoved` - 用户移动频道
 ## 开发与发布
 
 ### 自动发布
